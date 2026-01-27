@@ -92,6 +92,7 @@ struct ScanResults
         n_exreadsExcluded = 0;
         n_exreadsChrUnmatched=0;
         n_totalunfiltered = 0;
+        sample = "Unknown";
     }
 
 

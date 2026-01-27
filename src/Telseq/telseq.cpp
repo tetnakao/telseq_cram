@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <istream>
 #include <iterator>
@@ -9,32 +8,37 @@
 #include <sstream>
 #include <set>
 #include <map>
+#include <queue>
 #include <unistd.h>
 
 #include "telseq.h"
 #include "Timer.h"
 #include "math.h"
-#include "api/BamReader.h"
-#include "api/BamWriter.h"
 #include "Util.h"
 #include "prettyprint.h"
+#include <htslib/sam.h>
+#include <htslib/hts.h>
+#include <mutex>
+#include <thread>
+#include <htslib/thread_pool.h>
 
 //
 // Getopt
 //
 
 #define PROGRAM_BIN "telseq"
-#define AUTHOR "Zhihao Ding"
+#define AUTHOR "Tetsushi Nakao"
 
 static const char *TELSEQ_VERSION_MESSAGE =
 "TelSeq Version " PACKAGE_VERSION "\n"
-"Written by " AUTHOR ".\n"
-"Copyright 2013 Wellcome Trust Sanger Institute\n" ;
+"Original version from github.com/zd1/telseq\n"
+"Modified by " AUTHOR ".\n";
 
 static const char *TELSEQ_USAGE_MESSAGE =
 "Program: " PACKAGE_NAME "\n"
 "Version: " PACKAGE_VERSION "\n"
 "Contact: " AUTHOR " [" PACKAGE_BUGREPORT "]\n\n"
+"This package is modified TelSeq to accept CRAM file and multi-threading."
 "Usage: " PROGRAM_BIN " [OPTION] <in.1.bam> <in.2.bam> <...> \n"
 "Scan BAM and estimate telomere length. \n"
 "   <in.bam>                 one or more BAM files to be analysed. File names can also be passed from a pipe, \n "
@@ -46,9 +50,6 @@ static const char *TELSEQ_USAGE_MESSAGE =
 "   -H                       remove header line, which is printed by default.\n"
 "   -h                       print the header line only. The text can be used to attach to result files, useful\n"
 "                            when the headers of the result files are suppressed. \n"
-"   -m                       merge read groups by taking a weighted average across read groups of a sample, weighted by \n"
-"                            the total number of reads in read group. Default is to output each readgroup separately.\n"
-"   -u                       ignore read groups. Treat all reads in BAM as if they were from a same read group.\n"
 "   -k                       threshold of the amount of TTAGGG/CCCTAA repeats in read for a read to be considered telomeric. default = 7.\n"
 "\nTesting functions\n------------\n"
 "   -r                       read length. default = 100\n"
@@ -56,6 +57,8 @@ static const char *TELSEQ_USAGE_MESSAGE =
 "   -e, --exomebed=STR       specifiy exome regions in BED format. These regions will be excluded \n"
 "   -w,                      consider BAMs in the speicfied bamlist as one single BAM. This is useful when \n"
 "                            the initial alignemt is separated for some reason, such as one for mapped and one for ummapped reads. \n"
+"   -g, --reference_fasta    reference file is required for CRAM processing. .fai is also required.\n"
+"   -p, --NUM_THREADS        number of threads. default = 4\n"
 "   --help                   display this help and exit\n"
 
 "\nReport bugs to " PACKAGE_BUGREPORT "\n\n";
@@ -65,6 +68,7 @@ namespace opt
     static StringVector bamlist;
     static std::string outputfile = "";
     static std::string exomebedfile = "";
+    static std::string reference = "";
     static std::map< std::string, std::vector<range> > exomebed;
     static bool writerheader = true;
     static bool mergerg = false;
@@ -74,10 +78,11 @@ namespace opt
     static std::string unknown = "UNKNOWN";
     static std::string PATTERN;
     static std::string PATTERN_REV;
+    static int NUM_THREADS = 4;
 
 }
 
-static const char* shortopts = "f:o:k:z:e:r:p:Hhvmuw";
+static const char* shortopts = "f:o:k:z:e:r:p:g:s:Hhvmuw";
 
 enum { OPT_HELP = 1, OPT_VERSION };
 
@@ -85,6 +90,8 @@ static const struct option longopts[] = {
 	{ "bamlist",		optional_argument, NULL, 'f' },
     { "output-dir",		optional_argument, NULL, 'o' },
     { "exomebed",		optional_argument, NULL, 'e' },
+    { "reference",		optional_argument, NULL, 'g' },
+    { "NUM_THREADS",         optional_argument, NULL, 'p' },
     { "help",               no_argument,       NULL, OPT_HELP },
     { "version",            no_argument,       NULL, OPT_VERSION },
     { NULL, 0, NULL, 0 }
@@ -95,7 +102,7 @@ void add_results(ScanResults& x, ScanResults& y){
 
     x.numTotal += y.numTotal;
     x.numMapped += y.numMapped;
-    x.numDuplicates += y.numMapped;
+    x.numDuplicates += y.numDuplicates;
     x.n_exreadsExcluded += y.n_exreadsExcluded;
     x.n_exreadsChrUnmatched += y.n_exreadsChrUnmatched;
     x.n_totalunfiltered += y.n_totalunfiltered;
@@ -136,196 +143,214 @@ void merge_results_by_readgroup(
 
 }
 
+// Prep for multi-threading
+struct ThreadData {
+    int thread_id;
+    std::queue<bam1_t*> *queue;
+    pthread_mutex_t *queue_mutex;
+    pthread_mutex_t *count_mutex;
+    pthread_cond_t *queue_not_empty;
+    pthread_cond_t *queue_not_full;
+    std::map<std::string, ScanResults> *resultmap;
+};
 
-int scanBam()
-{
+void *processReads(void *threadarg) {
+    struct ThreadData *my_data;
+    my_data = (struct ThreadData *) threadarg;
+    std::cerr << "Starting thread with ID " << my_data->thread_id << "\n";
+    while (true) {
+        pthread_mutex_lock(my_data->queue_mutex);
+        while (my_data->queue->empty()) {
+            pthread_cond_wait(my_data->queue_not_empty, my_data->queue_mutex);
+        }
+        bam1_t *b = my_data->queue->front();
+        my_data->queue->pop();
+        pthread_cond_signal(my_data->queue_not_full);
+        pthread_mutex_unlock(my_data->queue_mutex);
+        if (b == nullptr) {
+            break;
+        }
+        // Process the read
+        std::string tag = "unknown";
 
-  std::vector< std::map<std::string, ScanResults> > resultlist;
-  bool isExome = opt::exomebedfile.size()==0? false: true;
+        pthread_mutex_lock(my_data->count_mutex);
+          my_data->resultmap->operator[](tag).numTotal += 1;
+        pthread_mutex_unlock(my_data->count_mutex);
 
-  std::cout << opt::bamlist << "\n";
-  std::cout << opt::bamlist.size() << " BAMs" <<  std::endl;
-
-  for(std::size_t i=0; i<opt::bamlist.size(); i++) {
-
-  // storing results for each read group (RG tag). use
-  // read group ID as key.
-      std::map<std::string, ScanResults> resultmap;
-      // store where the overlap was last found in the case of exome seq
-      std::map<std::string, std::vector<range>::iterator> lastfound;
-      std::vector<range>::iterator searchhint;
-
-      std::cerr << "Start analysing BAM " << opt::bamlist[i] << "\n";
-
-      // Open the bam files for reading/writing
-      BamTools::BamReader* pBamReader = new BamTools::BamReader;
-
-      pBamReader->Open(opt::bamlist[i]);
-
-      // get bam headers
-      const BamTools::SamHeader header = pBamReader ->GetHeader();
-      bool rggroups=false;
-
-      if(opt::ignorerg){ // ignore read groups
-	      std::cerr << "Treat all reads in BAM as if they were from a same sample" << std::endl;
-	      ScanResults results;
-	      results.sample = opt::unknown;
-	      resultmap[opt::unknown]=results;
-      }else{
-	std::map <std::string, std::string> readgroups;
-	std::map <std::string, std::string> readlibs;
-
-	rggroups = header.HasReadGroups();
-
-	if(rggroups){
-	  for(BamTools::SamReadGroupConstIterator it = header.ReadGroups.Begin(); it != header.ReadGroups.End();++it){
-	    readgroups[it->ID]= it->Sample;
-	    if(it->HasLibrary()){
-	      readlibs[it->ID] = it -> Library;
-	    }else{
-	      readlibs[it->ID] = opt::unknown;
-	    }
-	  }
-	  std::cerr<<"Specified BAM has "<< readgroups.size()<< " read groups" << std::endl;
-
-	  for(std::map<std::string, std::string>::iterator it = readgroups.begin(); it != readgroups.end(); ++it){
-		  ScanResults results;
-		  std::string rgid = it -> first;
-		  results.sample = it -> second;
-		  results.lib = readlibs[rgid];
-		  resultmap[rgid]=results; //results are identified by RG tag.
-	  }
-
-	}else{
-	  std::cerr << "Warning: can't find RG tag in the BAM header" << std::endl;
-	  std::cerr << "Warning: treat all reads in BAM as if they were from a same sample" << std::endl;
-	  ScanResults results;
-	  results.sample = opt::unknown;
-	  results.lib = opt::unknown;
-	  resultmap[opt::unknown]=results;
-	}
-      }
-
-      BamTools::BamAlignment record1;
-      bool done = false;
-
-      int nprocessed=0; // number of reads analyzed
-      int ntotal=0; // number of reads scanned in bam (we skip some reads, see below)
-      while(!done) {
-	ntotal ++;
-	done = !pBamReader -> GetNextAlignment(record1);
-	std::string tag = opt::unknown;
-	if(rggroups){
-	  // skip reads that do not have read group tag
-	  if(record1.HasTag("RG")){
-	    record1.GetTag("RG", tag);
-	  }else{
-	    std::cerr << "can't find RG tag for read at position {" << record1.RefID << ":" << record1.Position << "}" << std::endl;
-	    std::cerr << "skip this read" << std::endl;
-	    continue;
-	  }
-	}
-
-	// skip reads with readgroup not defined in BAM header
-	if(resultmap.find(tag) == resultmap.end()){
-	  std::cerr << "RG tag {" << tag << "} for read at position ";
-	  std::cerr << "{" << record1.RefID << ":" << record1.Position << "} doesn't exist in BAM header.";
-	  continue;
-	}
-
-	// for exome, exclude reads mapped to the exome regions.
-	if(isExome){
-	  range rg;
-	  rg.first = record1.Position;
-	  rg.second = record1.Position + record1.Length;
-	  std::string chrm =  refID2Name(record1.RefID);
-
-	  if(chrm != "-1"){ // check if overlap exome when the read is mapped to chr1-22, X, Y
-	    std::map<std::string, std::vector<range> >::iterator chrmit = opt::exomebed.find(chrm);
-	    if(chrmit == opt::exomebed.end()) {
-		// unmapped reads can have chr names as a star (*). We also don't consider MT reads.
-		resultmap[tag].n_exreadsChrUnmatched +=1;
-	    } else {
-	      std::vector<range>::iterator itend = opt::exomebed[chrm].end();
-	      std::map<std::string, std::vector<range>::iterator>::iterator lastfoundchrmit = lastfound.find(chrm);
-	      if(lastfoundchrmit == lastfound.end()){ // first entry to this chrm
-		      lastfound[chrm] = chrmit->second.begin();// start from begining
-	      }
-	      // set the hint to where the previous found is
-	      searchhint = lastfound[chrm];
-	      std::vector<range>::iterator itsearch = searchRange(searchhint, itend, rg);
-	      // if found
-	      if(itsearch != itend){// if found
-		searchhint = itsearch;
-		resultmap[tag].n_exreadsExcluded +=1;
-		lastfound[chrm] = searchhint; // update search hint
-		continue;
-	      }
+        uint8_t *sequence = bam_get_seq(b); // Get a pointer to the sequence data
+        std::string sequenceString;
+        sequenceString.reserve(b->core.l_qseq);  // Pre-allocate memory for the sequence string
+        for (int i = 0; i < b->core.l_qseq; ++i) {
+	      sequenceString += seq_nt16_str[bam_seqi(sequence, i)]; // Convert integer to base character
 	    }
 
-	  }
-	}
+        double gc = calcGC(sequenceString, b->core.l_qseq);
+        int ptn_count = countMotif(sequenceString, opt::PATTERN, opt::PATTERN_REV);
+        // when the read length exceeds 100bp, number of patterns might exceed the boundary
+        if (ptn_count > ScanParameters::TEL_MOTIF_N - 1) {
+          bam_destroy1(b);
+          continue;
+        }
 
-	resultmap[tag].numTotal +=1;
+        pthread_mutex_lock(my_data->count_mutex);
+          (*my_data->resultmap)[tag].telcounts[ptn_count] += 1;
+        pthread_mutex_unlock(my_data->count_mutex);
 
-	if(record1.IsMapped()) {
-	    resultmap[tag].numMapped += 1;
-	}
+        if (gc >= ScanParameters::GC_LOWERBOUND && gc <= ScanParameters::GC_UPPERBOUND) {
+          // get index for GC bin.
+          int idx = floor((gc - ScanParameters::GC_LOWERBOUND) / ScanParameters::GC_BINSIZE);
+          assert(idx >= 0 && idx <= ScanParameters::GC_BIN_N - 1);
+          if (idx > ScanParameters::GC_BIN_N - 1) {
+            std::cerr << " GC:{" << gc << "} telcounts:{" << ptn_count << "} GC bin index out of bound:" << idx << "\n";
+            exit(EXIT_FAILURE);
+          }
 
-	if(record1.IsDuplicate()) {
-	    resultmap[tag].numDuplicates +=1;
-	}
+        pthread_mutex_lock(my_data->count_mutex);
+          (*my_data->resultmap)[tag].gccounts[idx] += 1;
+        pthread_mutex_unlock(my_data->count_mutex);
 
-	double gc = calcGC(record1.QueryBases);
-	int ptn_count = countMotif(record1.QueryBases, opt::PATTERN, opt::PATTERN_REV);
-	// when the read length exceeds 100bp, number of patterns might exceed the boundary
-	if (ptn_count > ScanParameters::TEL_MOTIF_N-1){
-	    continue;
-	}
-	resultmap[tag].telcounts[ptn_count]+=1;
+        }
+
+        bam_destroy1(b);
+    }
+    pthread_exit(NULL);
+}
 
 
-	if(gc >= ScanParameters::GC_LOWERBOUND && gc <= ScanParameters::GC_UPPERBOUND){
-	  // get index for GC bin.
-	  int idx = floor((gc-ScanParameters::GC_LOWERBOUND)/ScanParameters::GC_BINSIZE);
-	  assert(idx >=0 && idx <= ScanParameters::GC_BIN_N-1);
-	  if(idx > ScanParameters::GC_BIN_N-1){
-	    std::cerr << nprocessed << " GC:{"<< gc << "} telcounts:{"<< ptn_count <<"} GC bin index out of bound:" << idx << "\n";
-	    exit(EXIT_FAILURE);
-	  }
-	  resultmap[tag].gccounts[idx]+=1;
-	}
+// Does accept one argument only.
+int scanCram() {
+    std::vector<std::map<std::string, ScanResults>> resultlist;
 
-	nprocessed++;
+    std::cout << opt::bamlist << "\n";
+    std::cout << opt::bamlist.size() << " CRAMs" << std::endl;
 
-	if( nprocessed%10000000 == 0){
-	  std::cerr << "[scan] processed " << nprocessed << " reads \n" ;
-	}
-      }
+    // Assuming opt::bamlist is the variable you're using from the opt namespace
+    auto& bamlist = opt::bamlist;
+    
+    // Declare the mutex and errorMessages before the lambda
+    std::mutex errorMutex;
+    std::vector<std::string> errorMessages;
 
-      pBamReader->Close();
-      delete pBamReader;
+    // Initialize thread pool
+    htsThreadPool p = {NULL, 0};
+    p.pool = hts_tpool_init(opt::NUM_THREADS); // assuming opt::NUM_THREADS is the number of threads you want
 
-      // consider each BAM separately
-      resultlist.push_back(resultmap);
+    std::vector<std::thread> threads;
+    std::mutex resultMutex;
 
-      std::cerr << "[scan] total reads in BAM scanned " << ntotal << std::endl;
-      std::cerr << "Completed scanning BAM\n";
-  }
+    for (std::size_t i = 0; i < opt::bamlist.size(); i++) {
+        std::thread t([&resultMutex, &resultlist, &bamlist, &errorMutex, &errorMessages, &p](std::size_t index) {
+            // lambda function to capture the current loop variable
+            // The code that processes each CRAM file
+            // storing results for each read group (RG tag). use
+            // read group ID as key.
+            std::map<std::string, ScanResults> resultmap;
+            // store where the overlap was last found in the case of exome seq
+            std::map<std::string, std::vector<range>::iterator> lastfound;
+            std::vector<range>::iterator searchhint;
 
-  if(opt::onebam){
-    merge_results_by_readgroup(resultlist);
-  }
+            std::string tag = "unknown";
 
-  outputresults(resultlist);
+            // Extract sample name
+            size_t lastSlash = opt::bamlist[index].find_last_of("/"); // Find last '/'
+            size_t startPos = (lastSlash == std::string::npos) ? 0 : lastSlash + 1; // If there's no '/', start searching from the beginning of the string
+            size_t dotCram = opt::bamlist[index].find(".cram", startPos); // Find '.cram' after the last slash or from the beginning
+        
+            if (dotCram != std::string::npos) {
+                resultmap[tag].sample = opt::bamlist[index].substr(startPos, dotCram - startPos);
+            } else {
+                std::cout << "Could not find sample name in the file path provided." << std::endl;
+            }
 
-  if(isExome){
-    printlog(resultlist);
-  }
+            // Open the cram files for reading/writing
+            samFile *cramFile = sam_open(opt::bamlist[index].c_str(), "r");
+            if (!cramFile) {
+                std::lock_guard<std::mutex> lock(errorMutex);
+                errorMessages.push_back("Failed to open CRAM file: " + opt::bamlist[index]);
+                return;
+            }
 
-  std::cerr << "Completed writing results\n";
+            // Get cram headers
+            bam_hdr_t *header = sam_hdr_read(cramFile);
+            bam1_t *read = bam_init1();
 
-  return 0;
+            // Load index file
+            std::string crai = opt::bamlist[index] + ".crai";
+
+            
+            // Load reference
+            if (hts_set_opt(cramFile, CRAM_OPT_REFERENCE, opt::reference.c_str()) < 0) {
+                std::cerr << "Failed to set reference for " << opt::bamlist[index] << std::endl;
+                
+                // Cleanup resources on failure before returning or exiting
+                bam_destroy1(read);
+                bam_hdr_destroy(header);
+                sam_close(cramFile);
+                
+                // Handle the error (either propagate it or just log it)
+                return;
+            }
+
+
+            // Set the number of threads for reading
+            hts_set_thread_pool(cramFile, &p);
+
+            while ((sam_read1(cramFile, header, read)) >= 0) {
+
+              resultmap[tag].numTotal += 1;
+
+              uint8_t *sequence = bam_get_seq(read); // Get a pointer to the sequence data
+
+              std::string sequenceString;
+              int seq_len = read->core.l_qseq;
+              sequenceString.reserve(seq_len);
+              for (int i = 0; i < seq_len; ++i) {
+                sequenceString += seq_nt16_str[bam_seqi(sequence, i)]; // Convert integer to base character
+              }
+
+              // std::cerr << "Sequence is " << sequenceString << "\n";
+
+              double gc = calcGC(sequenceString, seq_len);
+              int ptn_count = countMotif(sequenceString, opt::PATTERN, opt::PATTERN_REV);
+              // when the read length exceeds 100bp, number of patterns might exceed the boundary
+              if (ptn_count > ScanParameters::TEL_MOTIF_N - 1) {
+                continue;
+              }
+              resultmap[tag].telcounts[ptn_count] += 1;
+
+              if (gc >= ScanParameters::GC_LOWERBOUND && gc <= ScanParameters::GC_UPPERBOUND) {
+                // get index for GC bin.
+                int idx = floor((gc - ScanParameters::GC_LOWERBOUND) / ScanParameters::GC_BINSIZE);
+                assert(idx >= 0 && idx <= ScanParameters::GC_BIN_N - 1);
+                resultmap[tag].gccounts[idx] += 1;
+              }
+
+            }
+
+            bam_destroy1(read);
+            bam_hdr_destroy(header);
+            sam_close(cramFile);
+
+            std::lock_guard<std::mutex> lock(resultMutex);
+            resultlist.push_back(resultmap);
+
+        }, i);
+        threads.push_back(std::move(t));
+    }
+
+    // Join threads after processing
+    for (auto& thread : threads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+
+    hts_tpool_destroy(p.pool); // Cleanup the thread pool
+
+    outputresults(resultlist);
+    std::cerr << "Completed writing results\n";
+
+    return 0;
 }
 
 void printlog(std::vector< std::map<std::string, ScanResults> > resultlist){
@@ -344,7 +369,6 @@ void printlog(std::vector< std::map<std::string, ScanResults> > resultlist){
 	}
 
 }
-
 
 void printout(std::string rg, ScanResults result, std::ostream* pWriter){
 
@@ -379,7 +403,6 @@ void printout(std::string rg, ScanResults result, std::ostream* pWriter){
 	*pWriter << "\n";
 }
 
-
 int outputresults(std::vector< std::map<std::string, ScanResults> > resultlist){
 
 	std::ostream* pWriter;
@@ -398,10 +421,9 @@ int outputresults(std::vector< std::map<std::string, ScanResults> > resultlist){
 		*pWriter << "\n";
 	}
 
-	ScanResults mergedrs;
-	std::string grpnames = "";
-
 	for(size_t i=0; i < resultlist.size();++i){
+		ScanResults mergedrs;
+		std::string grpnames = "";
 
 		std::map<std::string, ScanResults> resultmap = resultlist[i];
 
@@ -488,42 +510,39 @@ double calcTelLength(ScanResults results){
 	return (acc/gc_tel)*float(ScanParameters::GENOME_LENGTH_AT_TEL_GC)/ScanParameters::LENGTH_UNIT/ScanParameters::TELOMERE_ENDS;
 }
 
+int countMotif(const std::string &read, const std::string &pattern, const std::string &pattern_rev){
+    int motifcount1 = 0;
+    int motifcount2 = 0;
 
+    size_t p1 = 0, p2 = 0;
 
-int countMotif(std::string &read, std::string pattern, std::string pattern_revcomp){
+    while (p1 < read.size() || p2 < read.size()) {
+        p1 = read.find(pattern, p1);
+        if (p1 != std::string::npos) {
+            motifcount1++;
+            p1 += pattern.size();
+        }
 
-	int motifcount1 = 0;
-	int motifcount2 = 0;
+        p2 = read.find(pattern_rev, p2);
+        if (p2 != std::string::npos) {
+            motifcount2++;
+            p2 += pattern_rev.size();
+        }
+    }
 
-	size_t p1 = read.find(pattern, 0);
-	while(p1 != std::string::npos)
-	{
-	    p1 = read.find(pattern,p1+pattern.size());
-	    motifcount1 += 1;
-	}
-
-	size_t p2 = read.find(pattern_revcomp, 0);
-	while(p2 != std::string::npos)
-	{
-	    p2 = read.find(pattern_revcomp,p2+pattern_revcomp.size());
-	    motifcount2 += 1;
-	}
-
-	return motifcount1 > motifcount2? motifcount1:motifcount2;
-
+    return std::max(motifcount1, motifcount2);
 }
 
-double calcGC(const std::string& seq)
+double calcGC(const std::string& seq, int length)
 {
-    double num_gc = 0.0f;
-    double num_total = 0.0f;
-    for(size_t i = 0; i < seq.size(); ++i)
+    int num_gc = 0;
+    for(size_t i = 0; i < length; ++i)
     {
-        if(seq[i] == 'C' || seq[i] == 'G')
+        char c = seq[i];
+        if(c == 'C' || c == 'G')
             ++num_gc;
-        ++num_total;
     }
-    return num_gc / num_total;
+    return static_cast<double>(num_gc) / length;
 }
 
 void update_pattern(){
@@ -560,6 +579,8 @@ void parseScanOptions(int argc, char** argv)
             	arg >> bamlistfile; break;
             case 'o':
             	arg >> opt::outputfile; break;
+            case 'g':
+            	arg >> opt::reference; break;
             case 'H':
             	opt::writerheader=false; break;
             case 'm':
@@ -585,7 +606,7 @@ void parseScanOptions(int argc, char** argv)
 				}
 				break;
             case 'p':
-
+                arg >> opt::NUM_THREADS;
 				break;
             case 'z':
             	arg >> ScanParameters::PATTERN;
@@ -680,7 +701,7 @@ int main(int argc, char** argv)
 {
 	Timer* pTimer = new Timer("scan BAM");
 	parseScanOptions(argc, argv);
-    scanBam();
+	scanCram();
     delete pTimer;
     return 0;
 }

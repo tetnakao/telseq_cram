@@ -1,53 +1,45 @@
 
-FROM ubuntu:14.04
-MAINTAINER Zhihao Ding <zhihao.ding@gmail.com>
-LABEL Description="Telseq docker" Version="0.0.1"
+FROM ubuntu:20.04
+LABEL Description="Telseq docker" Version="0.0.3"
 
-VOLUME /tmp
-
-WORKDIR /tmp
+ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
     apt-get install -y \
         automake \
+        autoconf \
         autotools-dev \
         build-essential \
         cmake \
         libhts-dev \
-        libhts0 \
         libjemalloc-dev \
         libsparsehash-dev \
         libz-dev \
-        python-matplotlib \
         wget \
-        zlib1g-dev
+        zlib1g-dev \
+        pkg-config \
+        binutils \
+        autoconf autotools-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev
 
-# build remaining dependencies:
-# bamtools
+
+#htslib
 RUN mkdir -p /deps && \
     cd /deps && \
-    wget https://github.com/pezmaster31/bamtools/archive/v2.4.0.tar.gz && \
-    tar -xzvf v2.4.0.tar.gz && \
-    rm v2.4.0.tar.gz && \
-    cd bamtools-2.4.0 && \
-    mkdir build && \
-    cd build && \
-    cmake .. && \
-    make
-
-
-# build telseq
-RUN mkdir -p /src && \
-    cd /src && \
-    wget https://github.com/zd1/telseq/archive/v0.0.1.tar.gz && \
-    tar -xzvf v0.0.1.tar.gz && \
-    rm v0.0.1.tar.gz && \
-    cd telseq-0.0.1/src && \
-    ./autogen.sh && \
-    ./configure --with-bamtools=/deps/bamtools-2.4.0 --prefix=/usr/local && \
+    wget https://github.com/samtools/htslib/releases/download/1.18/htslib-1.18.tar.bz2 -O htslib.tar.bz2 &&  \
+    tar -xjvf htslib.tar.bz2 && \
+    cd htslib-1.18 && \
+    autoconf -i && \
+    ./configure && \
     make && \
     make install
 
-
-ENTRYPOINT ["/usr/local/bin/telseq"]
-CMD ["--help"]
+# build telseq
+RUN apt-get install -y gdb
+COPY src src
+RUN cd src && \
+    ./autogen.sh && \
+    ./configure --prefix=/usr/local && \
+    make && \
+    make install
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
+CMD ["/bin/bash"]

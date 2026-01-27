@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([TelSeq], [0.0.1], [zhihao.ding@gmail.com])
+AC_INIT([TelSeq], [0.0.3], [tnakao@broadinstitute.org])
 AM_INIT_AUTOMAKE(foreign)
 AC_CONFIG_SRCDIR([Telseq/telseq.cpp])
 AC_CONFIG_HEADERS([config.h])
@@ -15,40 +15,25 @@ AC_PROG_RANLIB
 # Checks for header files.
 AC_LANG([C++])
 
-AC_ARG_WITH(bamtools,
-        AS_HELP_STRING([--with-bamtools=DIR], [specify directory containing the bamtools library (http://github.com/pezmaster31/bamtools)]),
-        [ if test -d "$withval" ; then
-            bamtools_ldflags="-Wl,-rpath,$withval/lib -L$withval/lib -Wl,-rpath,$withval/lib/bamtools -L$withval/lib/bamtools"
-    		bamtools_include="-I$withval/include -I$withval/include/bamtools"
-		else
-          	AC_MSG_ERROR([Cannot stat directory $withval])
-      	fi ]
-        )
-
 # Set compiler flags.
-#AC_SUBST(AM_CXXFLAGS, "-Wall -Wextra -Werror -Wno-unknown-pragmas")
-AC_SUBST(AM_CXXFLAGS, "-Wall -Wextra -Wno-unknown-pragmas -g -O0")
-#AC_SUBST(CXXFLAGS, "-O3")
-#AC_SUBST(CFLAGS, "-O3")
+AC_SUBST(AM_CXXFLAGS, "-Wall -Wextra -Wno-unknown-pragmas -g -O3 -pg")
 
 AC_SUBST(CXXFLAGS, "-std=c++11")
 AC_SUBST(CFLAGS, "-std=c++11")
 
-AC_SUBST(CPPFLAGS, "$CPPFLAGS $bamtools_include $gzstream_include")
-AC_SUBST(LDFLAGS, "$bamtools_ldflags $gzstream_ldflags $LDFLAGS")
+AC_SUBST(LIBS, "$LIBS -lz -lpthread")
 
-#AC_MSG_NOTICE(["CPPFLAGS is $CPPFLAGS"])
-#AC_MSG_NOTICE(["LDFLAGS is $LDFLAGS"])
+# use huslib instead of bamtools
+AC_ARG_WITH([htslib],
+  [AS_HELP_STRING([--with-htslib=PATH], [Path to htslib directory])],
+  [htslib_prefix="$withval"],
+  [htslib_prefix="/deps/htslib-1.18"])
 
-# We always need to specify to link in bamtools
-AC_SUBST(LIBS, "$LIBS -lbamtools -lz")
-
-#AC_MSG_NOTICE(["LIBS is $LIBS"])
-
-# Make sure the bamtools headers can be found
-AC_CHECK_HEADER([api/BamReader.h],,[AC_MSG_ERROR(
-[The bamtools library must be installed (http://github.com/pezmaster31/bamtools). \
-You can specify its path with the --with-bamtools=PATH option])])
+AC_MSG_CHECKING([for htslib library and headers])
+PKG_CHECK_MODULES([HTSLIB], [htslib >= 1.18], [], [AC_MSG_ERROR([htslib >= 1.18 not found.])])
+AC_MSG_RESULT([found])
+AC_SUBST([HTSLIB_CFLAGS])
+AC_SUBST([HTSLIB_LIBS], [-L${htslib_prefix}/lib -lhts])
 
 AC_CONFIG_FILES([Makefile
 		Util/Makefile
