@@ -1,3 +1,19 @@
+## Note on modifications
+This repository is a fork of https://github.com/original-author/repo.
+We modified the original code to support CRAM file processing and multi-threaded execution
+for large-scale genomic analyses performed in this study (Nakao et al., medRxiv, 2024).
+
+### Dependencies for this fork
+This fork depends on htslib.
+The original dependency on bamtools has been removed and is no longer used.
+
+### Options and outputs specific to this fork
+- `-u` and `-w` are parsed but currently have no effect.
+- Output columns are still printed; `ReadGroup` is always `unknown`, `Library` is empty,
+  and `Mapped` and `Duplicates` are 0.
+- `Sample` is extracted only for CRAM inputs (basename before `.cram`).
+
+# Overview
 TelSeq is a software that estimates telomere length from
 whole genome sequencing data (BAMs).
 
