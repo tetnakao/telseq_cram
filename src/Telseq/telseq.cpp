@@ -27,7 +27,6 @@
 //
 
 #define PROGRAM_BIN "telseq"
-#define AUTHOR "Tetsushi Nakao"
 
 static const char *TELSEQ_VERSION_MESSAGE =
 "TelSeq Version " PACKAGE_VERSION "\n"
@@ -55,8 +54,7 @@ static const char *TELSEQ_USAGE_MESSAGE =
 "   -r                       read length. default = 100\n"
 "   -z                       use user specified pattern for searching [ATGC]*.\n"
 "   -e, --exomebed=STR       specifiy exome regions in BED format. These regions will be excluded \n"
-"   -w,                      consider BAMs in the speicfied bamlist as one single BAM. This is useful when \n"
-"                            the initial alignemt is separated for some reason, such as one for mapped and one for ummapped reads. \n"
+"   -w,                      parsed but currently has no effect in this version.\n"
 "   -g, --reference_fasta    reference file is required for CRAM processing. .fai is also required.\n"
 "   -p, --NUM_THREADS        number of threads. default = 4\n"
 "   --help                   display this help and exit\n"

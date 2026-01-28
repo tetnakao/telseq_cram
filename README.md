@@ -8,6 +8,8 @@ This fork depends on htslib.
 The original dependency on bamtools has been removed and is no longer used.
 
 ### Options and outputs specific to this fork
+- `-g` is required for CRAM file processing to define reference genome.
+- `-p` can define the number of threads.
 - `-u` and `-w` are parsed but currently have no effect.
 - Output columns are still printed; `ReadGroup` is always `unknown`, `Library` is empty,
   and `Mapped` and `Duplicates` are 0.
@@ -35,8 +37,6 @@ Nucleic Acids Research 2014; doi: 10.1093/nar/gku181
 ## Compile TelSeq
 
 ### TelSeq dependency:
-- the bamtools library (https://github.com/pezmaster31/bamtools)
-
 - A modern version of GCC (version 4.8 or above)
 This can been seen by "gcc --version".
 If multiple GCCs are installed in your system, please set environmental
@@ -57,7 +57,6 @@ ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/
 brew install gcc
 ```
 
-
 ### Compile
 Go to the src directory and run autogen.sh from the src directory to generate the configure file
 `./autogen.sh`
@@ -68,12 +67,6 @@ make
 ```
 
 The executable binary will be at src/Telseq/telseq.
-If bamtools are installed not at the system location, you can
-specify their location by
-
-`./configure  --with-bamtools=/path/to/bamtools`
-
-The /path/to/bamtools directory is the directory that contains 'lib' and 'include' sub directories.
 
 ## Run TelSeq
 
@@ -122,10 +115,10 @@ can be done afterwards.
 | -------------|----------------------------------------------|
 | ReadGroup | read group, Defined by the RG tag in BAM header. |
 | Library   | sequencing library that the read group belongs to.|
-| Sample    | defined by the SM tag in BAM header. |
+| Sample    | populated for CRAM inputs (basename before `.cram`), otherwise empty. |
 | Total     | total number of reads in this read group. |
-| Mapped    | total number of mapped reads, SAM flag 0x4. |
-| Duplicates | total number of duplicate reads, SAM flag 0x400. |
+| Mapped    | always 0 in this version. |
+| Duplicates | always 0 in this version. |
 | LENGH_ESTIMATE | estimated telomere length. |
 | TEL0 | read counts for reads containing no TTAGGG/CCCTAA repeats. |
 | TEL1 | read counts for reads containing only 1 TTAGGG/CCCTAA repeats. |
