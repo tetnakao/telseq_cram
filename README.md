@@ -1,7 +1,7 @@
 ## Note on modifications
-This repository is a fork of https://github.com/original-author/repo.
+This repository is a fork of https://github.com/zd1/telseq.
 We modified the original code to support CRAM file processing and multi-threaded execution
-for large-scale genomic analyses performed in this study (Nakao et al., medRxiv, 2024).
+for large-scale genomic analyses performed in Nakao et al., medRxiv, 2024.
 
 ### Dependencies for this fork
 This fork depends on htslib.
