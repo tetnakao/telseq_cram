@@ -28,6 +28,10 @@
 
 #define PROGRAM_BIN "telseq"
 
+#ifndef AUTHOR
+#define AUTHOR "Tetsushi Nakao"
+#endif
+
 static const char *TELSEQ_VERSION_MESSAGE =
 "TelSeq Version " PACKAGE_VERSION "\n"
 "Original version from github.com/zd1/telseq\n"

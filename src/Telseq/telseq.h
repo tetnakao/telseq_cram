@@ -127,7 +127,7 @@ struct Headers{
 
 
 void parseScanOptions(int argc, char** argv);
-double calcGC(const std::string& seq);
+double calcGC(const std::string& seq, int length);
 int countMotif(std::string &read, std::string pattern, std::string pattern_revcomp);
 double calcTelLength(ScanResults results);
 int scanBam();
