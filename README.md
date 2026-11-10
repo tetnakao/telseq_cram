@@ -1,7 +1,7 @@
 ## Note on modifications
 This repository is a fork of https://github.com/zd1/telseq.
 We modified the original code to support CRAM file processing and multi-threaded execution
-for large-scale genomic analyses performed in Nakao et al., medRxiv, 2024.
+for large-scale genomic analyses performed in Nakao et al., Nature Genetics, 2026.
 
 ### Dependencies for this fork
 This fork depends on htslib.
@@ -161,6 +161,5 @@ need to be changed.
 docker run -v /path/to/bam/sample.bam:/sample.bam telseq-docker /sample.bam
 ```
 
-## Contact
-
-zhihao.ding at gmail.com
+## Contact for modification
+tnakao@broadinstitute.org
