@@ -1,45 +1,63 @@
-
-FROM ubuntu:20.04
-LABEL Description="Telseq docker" Version="0.0.3"
+FROM ubuntu:20.04 AS build
 
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
-    apt-get install -y \
-        automake \
+    apt-get install -y --no-install-recommends \
         autoconf \
+        automake \
         autotools-dev \
         build-essential \
-        cmake \
-        libhts-dev \
-        libjemalloc-dev \
+        ca-certificates \
+        libbz2-dev \
+        libcurl4-openssl-dev \
+        liblzma-dev \
         libsparsehash-dev \
-        libz-dev \
-        wget \
-        zlib1g-dev \
+        libssl-dev \
         pkg-config \
-        binutils \
-        autoconf autotools-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev
+        wget \
+        zlib1g-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-
-#htslib
+# htslib
 RUN mkdir -p /deps && \
     cd /deps && \
-    wget https://github.com/samtools/htslib/releases/download/1.18/htslib-1.18.tar.bz2 -O htslib.tar.bz2 &&  \
-    tar -xjvf htslib.tar.bz2 && \
+    wget -q https://github.com/samtools/htslib/releases/download/1.18/htslib-1.18.tar.bz2 -O htslib.tar.bz2 && \
+    tar -xjf htslib.tar.bz2 && \
     cd htslib-1.18 && \
     autoconf -i && \
     ./configure && \
-    make && \
+    make -j"$(nproc)" && \
     make install
 
-# build telseq
-RUN apt-get install -y gdb
-COPY src src
-RUN cd src && \
+# telseq
+COPY src /src
+RUN cd /src && \
     ./autogen.sh && \
     ./configure --prefix=/usr/local && \
-    make && \
+    make -j"$(nproc)" && \
     make install
+
+
+FROM ubuntu:20.04
+
+LABEL Description="Telseq docker" Version="0.0.4"
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libbz2-1.0 \
+        libcurl4 \
+        liblzma5 \
+        libssl1.1 \
+        libstdc++6 \
+        zlib1g && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /usr/local/bin /usr/local/bin
+COPY --from=build /usr/local/lib /usr/local/lib
+RUN ldconfig && ! ldd /usr/local/bin/telseq | grep "not found"
+
 ENV LD_LIBRARY_PATH=/usr/local/lib
 CMD ["/bin/bash"]
