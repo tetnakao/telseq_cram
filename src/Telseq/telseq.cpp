@@ -572,7 +572,7 @@ void parseScanOptions(int argc, char** argv)
 	std::string rev = "";
 
 	Headers hd;
-    for (char c; (c = getopt_long(argc, argv, shortopts, longopts, NULL)) != -1;)
+    for (int c; (c = getopt_long(argc, argv, shortopts, longopts, NULL)) != -1;)
     {
         std::istringstream arg(optarg != NULL ? optarg : "");
         switch (c)
