@@ -2,7 +2,7 @@ name: docker
 
 on:
   push:
-    branches: [main, master, docker, update/nodejs, docker_upgrade/multistage_build]
+    branches: [main, master, docker, update/nodejs, docker_upgrade/multistage_build, docker_upgrade/baseimage]
     tags: ['v*']
   workflow_dispatch:
 

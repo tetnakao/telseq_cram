@@ -1,4 +1,4 @@
-FROM ubuntu:20.04 AS build
+FROM ubuntu:24.04 AS build
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -25,7 +25,6 @@ RUN mkdir -p /deps && \
     wget -q https://github.com/samtools/htslib/releases/download/1.18/htslib-1.18.tar.bz2 -O htslib.tar.bz2 && \
     tar -xjf htslib.tar.bz2 && \
     cd htslib-1.18 && \
-    autoconf -i && \
     ./configure && \
     make -j"$(nproc)" && \
     make install
@@ -39,18 +38,18 @@ RUN cd /src && \
     make install
 
 
-FROM ubuntu:20.04
+FROM ubuntu:24.04
 
-LABEL Description="Telseq docker" Version="0.0.4"
+LABEL Description="Telseq docker" Version="0.0.5"
 
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libbz2-1.0 \
-        libcurl4 \
+        libcurl4t64 \
         liblzma5 \
-        libssl1.1 \
+        libssl3t64 \
         libstdc++6 \
         zlib1g && \
     rm -rf /var/lib/apt/lists/*
