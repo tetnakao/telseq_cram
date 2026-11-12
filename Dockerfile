@@ -41,5 +41,5 @@ RUN cd src && \
     ./configure --prefix=/usr/local && \
     make && \
     make install
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
+ENV LD_LIBRARY_PATH=/usr/local/lib
 CMD ["/bin/bash"]
