@@ -28,6 +28,10 @@
 
 #define PROGRAM_BIN "telseq"
 
+#ifndef AUTHOR
+#define AUTHOR "Tetsushi Nakao"
+#endif
+
 static const char *TELSEQ_VERSION_MESSAGE =
 "TelSeq Version " PACKAGE_VERSION "\n"
 "Original version from github.com/zd1/telseq\n"
@@ -568,7 +572,7 @@ void parseScanOptions(int argc, char** argv)
 	std::string rev = "";
 
 	Headers hd;
-    for (char c; (c = getopt_long(argc, argv, shortopts, longopts, NULL)) != -1;)
+    for (int c; (c = getopt_long(argc, argv, shortopts, longopts, NULL)) != -1;)
     {
         std::istringstream arg(optarg != NULL ? optarg : "");
         switch (c)
